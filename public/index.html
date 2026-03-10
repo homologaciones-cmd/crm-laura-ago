@@ -193,7 +193,7 @@ tr.row-urg td{background:#FFF8F8!important;}
 <body>
 
 
-<div id="sheets-banner" style="display:none!important" style="background:linear-gradient(135deg,#FFF8E0,#FFF0BB);border-bottom:2px solid #F0C050;padding:9px 20px 9px calc(var(--sidebar-w) + 20px);display:flex;align-items:center;gap:12px;font-size:13px;font-family:sans-serif;position:sticky;top:0;z-index:200;">
+<div id="sheets-banner" style="background:linear-gradient(135deg,#FFF8E0,#FFF0BB);border-bottom:2px solid #F0C050;padding:9px 20px 9px calc(var(--sidebar-w) + 20px);display:flex;align-items:center;gap:12px;font-size:13px;font-family:sans-serif;position:sticky;top:0;z-index:200;">
   <span style="font-size:20px">&#9729;&#65039;</span>
   <div style="flex:1"><strong>Google Sheets no configurado.</strong> Los datos solo se guardan en este navegador. Configura la sincronizacion para proteger los datos en la nube.</div>
   <button onclick="configurarSheet()" style="background:#1A6FAF;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">&#9881;&#65039; Configurar Google Sheets</button>
@@ -632,33 +632,23 @@ function configurarSheet(){
   input.addEventListener("keydown",e=>{if(e.key==="Enter")doSave();});
 }
 
-function syncToSheets() {
-  const dot = document.getElementById('save-dot');
-  const txt = document.getElementById('save-txt');
-  if(dot) { dot.className = 'save-dot saving'; dot.style.background = '#2B8FD0'; }
-  if(txt) txt.textContent = 'Guardando...';
-
-  fetch('/api/save', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ leads })
-  })
-  .then(r => r.json())
-  .then(() => {
-    localStorage.setItem('ago_crm_laura', JSON.stringify(leads));
-    if(dot) { dot.style.background = ''; dot.className = 'save-dot'; }
-    if(txt) txt.textContent = 'Guardado ✓';
-  })
-  .catch(() => {
-    // Guardar local si falla el servidor
-    localStorage.setItem('ago_crm_laura', JSON.stringify(leads));
-    if(dot) { dot.style.background = '#C83030'; dot.className = 'save-dot'; }
-    if(txt) txt.textContent = 'Guardado localmente';
-    setTimeout(() => {
-      if(dot) { dot.style.background = ''; dot.className = 'save-dot'; }
-      if(txt) txt.textContent = 'Guardado ✓';
-    }, 4000);
-  });
+function syncToSheets(){
+  const url = getScriptUrl();
+  if(!url) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(async ()=>{
+    setSyncStatus('syncing');
+    try{
+      await fetch(url,{
+        method:'POST', mode:'no-cors',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'sync',comercial:'Laura Gaviria',leads:leads})
+      });
+      setSyncStatus('ok');
+    } catch(e){
+      setSyncStatus('error');
+    }
+  }, 1200);
 }
 function setSyncStatus(state){
   const dot=document.getElementById('save-dot'),txt=document.getElementById('save-txt');
@@ -709,33 +699,56 @@ function restoreJSON(input){
       if(!confirm('Se cargarán '+data.length+' leads desde la copia. ¿Continuar?')){input.value='';return;}
       leads=data;
       doSave();
-      // ── CARGA DESDE SERVIDOR ──
+      // ── CARGA INICIAL DESDE SHEETS ──
 async function initCRM(){
-  const dot = document.getElementById('save-dot');
-  const txt = document.getElementById('save-txt');
+  const dot=document.getElementById('save-dot'),txt=document.getElementById('save-txt');
 
-  // Mostrar datos locales al instante mientras carga el servidor
-  try {
-    const local = localStorage.getItem('ago_crm_laura');
-    if (local) leads = JSON.parse(local);
-  } catch(e) {}
+  // 1. Cargar local inmediatamente para no mostrar pantalla vacía
+  const local = localStorage.getItem('ago_crm_laura');
+  if(local){
+    try{ leads = JSON.parse(local); }catch(e){ leads=[]; }
+  }
   renderAll();
 
-  // Cargar desde servidor (fuente de verdad permanente)
-  try {
-    if(txt) txt.textContent = 'Cargando...';
-    const resp = await fetch('/api/load', { cache: 'no-store' });
-    const data = await resp.json();
-    if (data.status === 'ok' && Array.isArray(data.leads)) {
-      leads = data.leads;
-      localStorage.setItem('ago_crm_laura', JSON.stringify(leads));
-      renderAll();
-      if(txt) txt.textContent = 'Guardado ✓';
-      if(dot) { dot.style.background = ''; dot.className = 'save-dot'; }
+  // 2. Si hay script configurado, cargar desde Sheets (fuente de verdad)
+  const url = getScriptUrl();
+  if(url){
+    document.getElementById('sheets-banner').style.display='none';
+    const btn=document.getElementById('sheets-cfg-btn');
+    if(btn){btn.style.opacity='1';btn.title='Google Sheets conectado. Clic para cambiar URL.';}
+
+    try{
+      dot.className='save-dot saving';dot.style.background='#2B8FD0';
+      txt.textContent='Cargando datos desde Sheets...';
+
+      // Llamada GET con action=load
+      const resp = await fetch(url + '?action=load', {
+        method: 'GET',
+        mode: 'cors',
+        cache: 'no-store'
+      });
+
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+
+      if(data.status === 'ok' && Array.isArray(data.leads)){
+        // Sheets es la fuente de verdad — siempre usamos esos datos
+        leads = data.leads;
+        localStorage.setItem('ago_crm_laura', JSON.stringify(leads));
+        renderAll();
+        dot.className='save-dot';dot.style.background='';
+        txt.textContent='Datos cargados desde Sheets ☁️';
+        setTimeout(()=>{ if(txt.textContent.includes('Sheets')) txt.textContent='Guardado'; },3000);
+      } else {
+        throw new Error('Respuesta inesperada de Sheets');
+      }
+    } catch(err){
+      // Si falla la carga desde Sheets, usamos los datos locales
+      dot.className='save-dot';dot.style.background='#C83030';
+      txt.textContent='Sin conexión — usando datos locales';
+      setTimeout(()=>{ txt.textContent='Guardado'; dot.style.background=''; dot.className='save-dot'; },5000);
+      console.warn('No se pudo cargar desde Sheets:', err);
     }
-  } catch(e) {
-    if(txt) txt.textContent = 'Sin conexión — datos locales';
-    setTimeout(() => { if(txt) txt.textContent = 'Guardado ✓'; }, 3000);
   }
 }
 initCRM();
@@ -1050,6 +1063,31 @@ document.addEventListener('keydown',e=>{
 });
 
 renderAll();
+async function initCRM(){
+  const dot = document.getElementById('save-dot');
+  const txt = document.getElementById('save-txt');
+  try {
+    const local = localStorage.getItem('ago_crm_laura');
+    if (local) leads = JSON.parse(local);
+  } catch(e) {}
+  renderAll();
+  try {
+    if(txt) txt.textContent = 'Cargando...';
+    const resp = await fetch('/api/load', { cache: 'no-store' });
+    const data = await resp.json();
+    if (data.status === 'ok' && Array.isArray(data.leads)) {
+      leads = data.leads;
+      localStorage.setItem('ago_crm_laura', JSON.stringify(leads));
+      renderAll();
+      if(txt) txt.textContent = 'Guardado ✓';
+      if(dot) { dot.style.background = ''; dot.className = 'save-dot'; }
+    }
+  } catch(e) {
+    if(txt) txt.textContent = 'Sin conexión — datos locales';
+    setTimeout(() => { if(txt) txt.textContent = 'Guardado ✓'; }, 3000);
+  }
+}
+initCRM();
 </script>
 </body>
 </html>
