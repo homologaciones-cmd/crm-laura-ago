@@ -667,8 +667,20 @@ function setSyncStatus(state){
 }
 
 function doSave(){
-  try{localStorage.setItem('ago_crm_laura',JSON.stringify(leads));showSaveOk();if(getScriptUrl())syncToSheets();}
-  catch(e){showSaveOk();}
+  try{localStorage.setItem('ago_crm_laura',JSON.stringify(leads));}catch(e){}
+  const dot=document.getElementById('save-dot'),txt=document.getElementById('save-txt');
+  fetch('/api/save',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({leads})
+  })
+  .then(r=>r.json())
+  .then(()=>{showSaveOk();})
+  .catch(()=>{
+    if(dot){dot.style.background='#C83030';dot.className='save-dot';}
+    if(txt)txt.textContent='Guardado localmente';
+    setTimeout(()=>{showSaveOk();if(dot)dot.style.background='';},4000);
+  });
 }
 function triggerSave(){
   const dot=document.getElementById('save-dot'),txt=document.getElementById('save-txt');
